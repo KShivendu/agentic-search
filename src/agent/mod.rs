@@ -3,11 +3,14 @@ pub mod reader;
 pub mod synthesizer;
 
 use anyhow::Result;
+use colored::Colorize;
+use indicatif::{ProgressBar, ProgressStyle};
+use std::io::Write;
 use std::time::Instant;
 
 use crate::config::Config;
 use crate::instrumentation::{HopLog, RunLog, RunLogger};
-use crate::llm::LlmClient;
+use crate::llm::{LlmClient, StreamEvent};
 use crate::retrieval::QdrantRetriever;
 
 use planner::Planner;
@@ -21,6 +24,18 @@ pub struct Agent {
     retriever: QdrantRetriever,
     config: Config,
     logger: RunLogger,
+}
+
+fn new_spinner(msg: &str) -> ProgressBar {
+    let sp = ProgressBar::new_spinner();
+    sp.set_style(
+        ProgressStyle::with_template("{spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+    );
+    sp.set_message(msg.to_string());
+    sp.enable_steady_tick(std::time::Duration::from_millis(80));
+    sp
 }
 
 impl Agent {
@@ -45,21 +60,32 @@ impl Agent {
         })
     }
 
-    pub async fn ask(&self, question: &str, verbose: bool) -> Result<RunLog> {
+    pub async fn ask(&self, question: &str, verbose: bool, stream: bool) -> Result<RunLog> {
         let run_start = Instant::now();
         let mut hops: Vec<HopLog> = Vec::new();
         let mut accumulated_context: Vec<String> = Vec::new();
 
         // Step 1: Plan initial queries
+        let spinner = if stream {
+            Some(new_spinner("Planning queries..."))
+        } else {
+            None
+        };
+
         let plan_start = Instant::now();
         let (queries, plan_response) = self.planner.plan(question).await?;
         let plan_latency = plan_start.elapsed().as_millis() as u64;
 
+        if let Some(sp) = &spinner {
+            sp.finish_and_clear();
+        }
+
         if verbose {
             eprintln!(
-                "[planner] Generated {} queries in {}ms",
+                "{} Generated {} queries in {}",
+                "[planner]".cyan().bold(),
                 queries.len(),
-                plan_latency
+                format!("{}ms", plan_latency).yellow(),
             );
             for q in &queries {
                 eprintln!("  - {}", q);
@@ -75,7 +101,16 @@ impl Agent {
 
             let hop_start = Instant::now();
 
-            // Search Qdrant (cloud inference handles embedding server-side)
+            // Search Qdrant
+            let spinner = if stream {
+                Some(new_spinner(&format!(
+                    "Searching (hop {})...",
+                    hop_number + 1
+                )))
+            } else {
+                None
+            };
+
             let search_start = Instant::now();
             let query_text = pending_queries.join(" ");
             let passages = self
@@ -84,6 +119,10 @@ impl Agent {
                 .await?;
             let search_latency = search_start.elapsed().as_millis() as u64;
             let num_results = passages.len();
+
+            if let Some(sp) = &spinner {
+                sp.set_message(format!("Reading (hop {})...", hop_number + 1));
+            }
 
             let passage_texts: Vec<String> = passages.iter().map(|p| p.text.clone()).collect();
             let tokens_in_passages: u32 = passage_texts.iter().map(|t| (t.len() / 4) as u32).sum();
@@ -97,6 +136,10 @@ impl Agent {
                 .read(question, &passage_texts, &accumulated_context)
                 .await?;
             let llm_latency = llm_start.elapsed().as_millis() as u64;
+
+            if let Some(sp) = &spinner {
+                sp.finish_and_clear();
+            }
 
             let hop_log = HopLog {
                 hop_number: hop_number as u32,
@@ -120,8 +163,12 @@ impl Agent {
 
             if verbose {
                 eprintln!(
-                    "[hop {}] {} results, search={}ms llm={}ms → {}",
-                    hop_number, num_results, search_latency, llm_latency, hop_log.decision
+                    "{} {} results, search={} llm={} → {}",
+                    format!("[hop {}]", hop_number).cyan().bold(),
+                    num_results,
+                    format!("{}ms", search_latency).yellow(),
+                    format!("{}ms", llm_latency).yellow(),
+                    hop_log.decision,
                 );
             }
 
@@ -137,25 +184,86 @@ impl Agent {
 
         // Synthesize final answer
         let synth_start = Instant::now();
-        let (answer, synth_response) = self
-            .synthesizer
-            .synthesize(question, &accumulated_context)
-            .await?;
+
+        let (answer, synth_input_tokens, synth_output_tokens, synth_cost) = if stream {
+            let spinner = new_spinner("Synthesizing...");
+
+            let mut rx = self
+                .synthesizer
+                .synthesize_stream(question, &accumulated_context)
+                .await?;
+
+            let mut full_text = String::new();
+            let mut input_tokens = 0u32;
+            let mut output_tokens = 0u32;
+            let mut cost = 0.0f64;
+            let mut first_token = true;
+
+            while let Some(event) = rx.recv().await {
+                match event {
+                    StreamEvent::Token(token) => {
+                        if first_token {
+                            spinner.finish_and_clear();
+                            // Print a leading newline before the streamed answer
+                            eprintln!();
+                            first_token = false;
+                        }
+                        print!("{}", token);
+                        std::io::stdout().flush().ok();
+                    }
+                    StreamEvent::Done {
+                        full_text: text,
+                        input_tokens: it,
+                        output_tokens: ot,
+                        cost: c,
+                    } => {
+                        if first_token {
+                            spinner.finish_and_clear();
+                        }
+                        full_text = text;
+                        input_tokens = it;
+                        output_tokens = ot;
+                        cost = c;
+                    }
+                }
+            }
+
+            // Trailing newline after streamed answer
+            println!();
+
+            (full_text, input_tokens, output_tokens, cost)
+        } else {
+            let (answer, synth_response) = self
+                .synthesizer
+                .synthesize(question, &accumulated_context)
+                .await?;
+            (
+                answer,
+                synth_response.input_tokens,
+                synth_response.output_tokens,
+                synth_response.cost,
+            )
+        };
+
         let synth_latency = synth_start.elapsed().as_millis() as u64;
 
         if verbose {
-            eprintln!("[synthesizer] Generated answer in {}ms", synth_latency);
+            eprintln!(
+                "{} Generated answer in {}",
+                "[synthesizer]".cyan().bold(),
+                format!("{}ms", synth_latency).yellow(),
+            );
         }
 
         let total_latency = run_start.elapsed().as_millis() as u64;
         let total_llm_input_tokens: u32 = plan_response.input_tokens
-            + synth_response.input_tokens
+            + synth_input_tokens
             + hops.iter().map(|h| h.llm_input_tokens).sum::<u32>();
         let total_llm_output_tokens: u32 = plan_response.output_tokens
-            + synth_response.output_tokens
+            + synth_output_tokens
             + hops.iter().map(|h| h.llm_output_tokens).sum::<u32>();
         let total_cost: f64 =
-            plan_response.cost + synth_response.cost + hops.iter().map(|h| h.llm_cost).sum::<f64>();
+            plan_response.cost + synth_cost + hops.iter().map(|h| h.llm_cost).sum::<f64>();
 
         let run_log = RunLog {
             id: uuid::Uuid::new_v4().to_string(),
@@ -163,8 +271,8 @@ impl Agent {
             question: question.to_string(),
             hops: hops.clone(),
             synthesis_latency_ms: synth_latency,
-            synthesis_input_tokens: synth_response.input_tokens,
-            synthesis_output_tokens: synth_response.output_tokens,
+            synthesis_input_tokens: synth_input_tokens,
+            synthesis_output_tokens: synth_output_tokens,
             plan_latency_ms: plan_latency,
             plan_input_tokens: plan_response.input_tokens,
             plan_output_tokens: plan_response.output_tokens,
