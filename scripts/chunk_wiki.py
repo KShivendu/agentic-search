@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Parse Wikipedia XML dump and chunk into passages.
 
+Resumable: if output file exists, skips already-processed articles.
+
 Outputs JSONL with one passage per line:
   {"id": "...", "title": "...", "text": "...", "chunk_index": 0}
 """
@@ -11,6 +13,8 @@ import os
 import re
 import sys
 import xml.etree.ElementTree as ET
+
+from tqdm import tqdm
 
 try:
     import mwparserfromhell
@@ -24,6 +28,9 @@ MIN_WORDS = 30
 MAX_WORDS = 300
 TARGET_WORDS = 200
 
+# Simple English Wikipedia: ~250K articles total, ~200K in main namespace
+ESTIMATED_ARTICLES = 200_000
+
 # MediaWiki XML namespace
 MW_NS = "http://www.mediawiki.org/xml/export-0.11/"
 
@@ -32,9 +39,7 @@ def clean_wikitext(wikitext: str) -> str:
     """Convert wikitext to plain text using mwparserfromhell."""
     try:
         parsed = mwparserfromhell.parse(wikitext)
-        # Remove templates, tags, etc.
         text = parsed.strip_code(normalize=True, collapse=True)
-        # Clean up extra whitespace
         text = re.sub(r"\n{3,}", "\n\n", text)
         text = re.sub(r" {2,}", " ", text)
         return text.strip()
@@ -53,7 +58,6 @@ def chunk_text(text: str, title: str) -> list[dict]:
         words = para.split()
         para_words = len(words)
 
-        # If a single paragraph exceeds MAX_WORDS, split it by sentences
         if para_words > MAX_WORDS:
             sentences = re.split(r"(?<=[.!?])\s+", para)
             for sentence in sentences:
@@ -84,7 +88,6 @@ def chunk_text(text: str, title: str) -> list[dict]:
             current_chunk.append(para)
             current_words += para_words
 
-    # Don't forget the last chunk
     if current_words >= MIN_WORDS:
         chunks.append(
             {
@@ -94,7 +97,6 @@ def chunk_text(text: str, title: str) -> list[dict]:
             }
         )
 
-    # Add IDs
     for i, chunk in enumerate(chunks):
         chunk["id"] = f"{title.replace(' ', '_')}_{i}"
 
@@ -104,14 +106,12 @@ def chunk_text(text: str, title: str) -> list[dict]:
 def iter_articles(filepath: str):
     """Iterate over articles in a Wikipedia XML dump (bz2 compressed)."""
     with bz2.open(filepath, "rt", encoding="utf-8") as f:
-        # Use iterparse to avoid loading the entire XML into memory
         context = ET.iterparse(f, events=("end",))
         for event, elem in context:
             tag = elem.tag.replace(f"{{{MW_NS}}}", "")
 
             if tag == "page":
                 ns_elem = elem.find(f"{{{MW_NS}}}ns")
-                # Only process main namespace (ns=0)
                 if ns_elem is not None and ns_elem.text == "0":
                     title_elem = elem.find(f"{{{MW_NS}}}title")
                     text_elem = elem.find(
@@ -122,7 +122,6 @@ def iter_articles(filepath: str):
                         title = title_elem.text
                         wikitext = text_elem.text
 
-                        # Skip redirects
                         if wikitext.lower().startswith("#redirect"):
                             elem.clear()
                             continue
@@ -132,23 +131,60 @@ def iter_articles(filepath: str):
                 elem.clear()
 
 
+def load_processed_titles(filepath: str) -> tuple[set[str], int]:
+    """Load titles already in the output file for resumability. Returns (titles, chunk_count)."""
+    titles = set()
+    chunks = 0
+    if not os.path.exists(filepath):
+        return titles, chunks
+    with open(filepath) as f:
+        for line in f:
+            if line.strip():
+                try:
+                    data = json.loads(line)
+                    titles.add(data["title"])
+                    chunks += 1
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    return titles, chunks
+
+
 def main():
     if not os.path.exists(INPUT_FILE):
         print(f"Input file not found: {INPUT_FILE}")
         print("Run download_wiki.py first.")
         sys.exit(1)
 
-    print(f"Processing: {INPUT_FILE}")
-    print(f"Output: {OUTPUT_FILE}")
-
     os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
 
-    total_articles = 0
-    total_chunks = 0
+    # Check for existing progress
+    processed_titles, existing_chunks = load_processed_titles(OUTPUT_FILE)
+    skip_count = len(processed_titles)
 
-    with open(OUTPUT_FILE, "w") as out:
-        for title, wikitext in iter_articles(INPUT_FILE):
-            total_articles += 1
+    if skip_count > 0:
+        print(f"Resuming: {skip_count} articles ({existing_chunks} chunks) already processed")
+        mode = "a"
+    else:
+        mode = "w"
+
+    print(f"Input:  {INPUT_FILE}")
+    print(f"Output: {OUTPUT_FILE}\n")
+
+    total_chunks = existing_chunks
+
+    pbar = tqdm(
+        iter_articles(INPUT_FILE),
+        total=ESTIMATED_ARTICLES,
+        desc="Chunking",
+        unit=" articles",
+        dynamic_ncols=True,
+    )
+
+    with open(OUTPUT_FILE, mode) as out:
+        for title, wikitext in pbar:
+            if title in processed_titles:
+                continue
+
             text = clean_wikitext(wikitext)
 
             if len(text.split()) < MIN_WORDS:
@@ -159,13 +195,9 @@ def main():
                 out.write(json.dumps(chunk) + "\n")
                 total_chunks += 1
 
-            if total_articles % 1000 == 0:
-                print(
-                    f"  Processed {total_articles} articles, {total_chunks} chunks",
-                    end="\r",
-                )
+            pbar.set_postfix(chunks=f"{total_chunks:,}", refresh=False)
 
-    print(f"\nDone: {total_articles} articles → {total_chunks} chunks")
+    print(f"\nTotal chunks: {total_chunks:,}")
     print(f"Output: {OUTPUT_FILE}")
 
 
