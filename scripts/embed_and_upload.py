@@ -1,15 +1,23 @@
 #!/usr/bin/env python3
 """Embed passages locally and upload to Qdrant.
 
-Uses sentence-transformers with mxbai-embed-large-v1 for embedding.
-Creates a Qdrant collection with Binary Quantization enabled.
+Resumable: checks how many points are already in Qdrant and skips them.
+Streams passages from JSONL — does not load all into memory.
+
+Strategy: embed in small batches (64), accumulate, then upsert in large
+batches (1024) to minimize Qdrant round trips. Indexing is disabled during
+upload and re-enabled after.
 """
 
 import json
 import os
 import sys
-import time
 import uuid
+
+from dotenv import load_dotenv
+from tqdm import tqdm
+
+load_dotenv()
 
 try:
     from sentence_transformers import SentenceTransformer
@@ -23,6 +31,7 @@ try:
         BinaryQuantization,
         BinaryQuantizationConfig,
         Distance,
+        OptimizersConfigDiff,
         PointStruct,
         VectorParams,
     )
@@ -32,23 +41,31 @@ except ImportError:
 
 INPUT_FILE = "data/passages.jsonl"
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
+QDRANT_API_KEY = os.environ.get("QDRANT_API_KEY")
 COLLECTION_NAME = os.environ.get("QDRANT_COLLECTION", "wiki_passages")
-MODEL_NAME = "mixedbread-ai/mxbai-embed-large-v1"
-BATCH_SIZE = 64
-VECTOR_DIM = 1024  # mxbai-embed-large-v1 output dimension
+MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+EMBED_BATCH_SIZE = 256   # MiniLM is small enough for large CPU batches
+UPLOAD_BATCH_SIZE = 2048  # large batches for Qdrant upsert (fewer round trips)
+
+MODEL_DIMS = {
+    "all-MiniLM-L6-v2": 384,
+    "mixedbread-ai/mxbai-embed-large-v1": 1024,
+}
+VECTOR_DIM = MODEL_DIMS.get(MODEL_NAME, 384)
 
 
-def create_collection(client: QdrantClient):
-    """Create Qdrant collection with Binary Quantization."""
+def ensure_collection(client: QdrantClient) -> int:
+    """Create collection if needed with indexing disabled. Returns current point count."""
     collections = [c.name for c in client.get_collections().collections]
 
     if COLLECTION_NAME in collections:
         info = client.get_collection(COLLECTION_NAME)
-        print(f"Collection '{COLLECTION_NAME}' already exists ({info.points_count} points)")
-        resp = input("Recreate? [y/N] ").strip().lower()
-        if resp != "y":
-            return False
-        client.delete_collection(COLLECTION_NAME)
+        print(f"Collection '{COLLECTION_NAME}' exists ({info.points_count} points)")
+        client.update_collection(
+            collection_name=COLLECTION_NAME,
+            optimizer_config=OptimizersConfigDiff(indexing_threshold=0),
+        )
+        return info.points_count
 
     client.create_collection(
         collection_name=COLLECTION_NAME,
@@ -59,19 +76,33 @@ def create_collection(client: QdrantClient):
                 binary=BinaryQuantizationConfig(always_ram=True),
             ),
         ),
+        optimizers_config=OptimizersConfigDiff(indexing_threshold=0),
     )
-    print(f"Created collection '{COLLECTION_NAME}' with BQ enabled")
-    return True
+    print(f"Created collection '{COLLECTION_NAME}' with BQ enabled, indexing disabled")
+    return 0
 
 
-def load_passages(filepath: str) -> list[dict]:
-    """Load passages from JSONL file."""
-    passages = []
+def count_lines(filepath: str) -> int:
+    """Count lines in a file without loading it all."""
+    count = 0
     with open(filepath) as f:
         for line in f:
             if line.strip():
-                passages.append(json.loads(line))
-    return passages
+                count += 1
+    return count
+
+
+def iter_passages(filepath: str, skip: int = 0):
+    """Stream passages from JSONL, optionally skipping the first `skip` lines."""
+    skipped = 0
+    with open(filepath) as f:
+        for line in f:
+            if not line.strip():
+                continue
+            if skipped < skip:
+                skipped += 1
+                continue
+            yield json.loads(line)
 
 
 def main():
@@ -80,63 +111,104 @@ def main():
         print("Run chunk_wiki.py first.")
         sys.exit(1)
 
-    print(f"Loading passages from {INPUT_FILE}...")
-    passages = load_passages(INPUT_FILE)
-    print(f"Loaded {len(passages)} passages")
+    print(f"Counting passages in {INPUT_FILE}...")
+    total_passages = count_lines(INPUT_FILE)
+    print(f"Total: {total_passages:,} passages")
+
+    print(f"Connecting to Qdrant: {QDRANT_URL}...")
+    client = QdrantClient(url=QDRANT_URL, api_key=QDRANT_API_KEY)
+    existing_points = ensure_collection(client)
+
+    # Resume: skip passages already uploaded
+    skip_passages = 0
+    if existing_points > 0:
+        skip_passages = (existing_points // UPLOAD_BATCH_SIZE) * UPLOAD_BATCH_SIZE
+        print(f"Resuming: skipping first {skip_passages:,} passages (already uploaded)")
+
+    remaining_count = total_passages - skip_passages
 
     print(f"Loading embedding model: {MODEL_NAME}...")
     model = SentenceTransformer(MODEL_NAME)
 
-    print(f"Connecting to Qdrant: {QDRANT_URL}...")
-    client = QdrantClient(url=QDRANT_URL)
-    create_collection(client)
+    print(f"\nEmbed (batch={EMBED_BATCH_SIZE}) → Upload (batch={UPLOAD_BATCH_SIZE})")
+    print(f"Processing {remaining_count:,} passages...\n")
 
-    print(f"Embedding and uploading in batches of {BATCH_SIZE}...")
-    total_uploaded = 0
-    start_time = time.time()
+    pbar = tqdm(
+        total=remaining_count,
+        desc="Embed+Upload",
+        unit=" passages",
+        dynamic_ncols=True,
+    )
 
-    for batch_start in range(0, len(passages), BATCH_SIZE):
-        batch = passages[batch_start : batch_start + BATCH_SIZE]
-        texts = [p["text"] for p in batch]
+    upload_buffer: list[PointStruct] = []
+    embed_batch: list[dict] = []
 
-        # Embed batch
+    for passage in iter_passages(INPUT_FILE, skip=skip_passages):
+        embed_batch.append(passage)
+
+        if len(embed_batch) >= EMBED_BATCH_SIZE:
+            # Embed small batch
+            texts = [p["text"] for p in embed_batch]
+            embeddings = model.encode(texts, show_progress_bar=False)
+
+            for p, emb in zip(embed_batch, embeddings):
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, p["id"]))
+                upload_buffer.append(
+                    PointStruct(
+                        id=point_id,
+                        vector=emb.tolist(),
+                        payload={
+                            "text": p["text"],
+                            "title": p["title"],
+                            "chunk_index": p["chunk_index"],
+                            "passage_id": p["id"],
+                        },
+                    )
+                )
+
+            pbar.update(len(embed_batch))
+            embed_batch = []
+
+            # Flush to Qdrant when upload buffer is full
+            if len(upload_buffer) >= UPLOAD_BATCH_SIZE:
+                client.upsert(collection_name=COLLECTION_NAME, points=upload_buffer)
+                upload_buffer = []
+
+    # Handle remaining embed batch
+    if embed_batch:
+        texts = [p["text"] for p in embed_batch]
         embeddings = model.encode(texts, show_progress_bar=False)
-
-        # Create Qdrant points
-        points = []
-        for passage, embedding in zip(batch, embeddings):
-            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, passage["id"]))
-            points.append(
+        for p, emb in zip(embed_batch, embeddings):
+            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, p["id"]))
+            upload_buffer.append(
                 PointStruct(
                     id=point_id,
-                    vector=embedding.tolist(),
+                    vector=emb.tolist(),
                     payload={
-                        "text": passage["text"],
-                        "title": passage["title"],
-                        "chunk_index": passage["chunk_index"],
-                        "passage_id": passage["id"],
+                        "text": p["text"],
+                        "title": p["title"],
+                        "chunk_index": p["chunk_index"],
+                        "passage_id": p["id"],
                     },
                 )
             )
+        pbar.update(len(embed_batch))
 
-        # Upload to Qdrant
-        client.upsert(collection_name=COLLECTION_NAME, points=points)
-        total_uploaded += len(points)
+    # Flush remaining upload buffer
+    if upload_buffer:
+        client.upsert(collection_name=COLLECTION_NAME, points=upload_buffer)
 
-        elapsed = time.time() - start_time
-        rate = total_uploaded / elapsed if elapsed > 0 else 0
-        print(
-            f"\r  Uploaded {total_uploaded}/{len(passages)} ({rate:.0f} passages/s)",
-            end="",
-        )
+    pbar.close()
 
-    elapsed = time.time() - start_time
-    print(f"\n\nDone: {total_uploaded} passages uploaded in {elapsed:.1f}s")
-    print(f"Collection: {COLLECTION_NAME}")
+    # Re-enable indexing
+    print("\nUpload complete. Enabling indexing (threshold=20000)...")
+    client.update_collection(
+        collection_name=COLLECTION_NAME,
+        optimizer_config=OptimizersConfigDiff(indexing_threshold=20000),
+    )
 
-    # Verify
     info = client.get_collection(COLLECTION_NAME)
-    print(f"Qdrant reports {info.points_count} points in collection")
+    print(f"Done. {info.points_count:,} points in '{COLLECTION_NAME}'. Indexing will run in background.")
 
 
 if __name__ == "__main__":

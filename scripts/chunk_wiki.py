@@ -2,6 +2,7 @@
 """Parse Wikipedia XML dump and chunk into passages.
 
 Resumable: if output file exists, skips already-processed articles.
+Uses multiprocessing to parallelize the CPU-bound wikitext parsing.
 
 Outputs JSONL with one passage per line:
   {"id": "...", "title": "...", "text": "...", "chunk_index": 0}
@@ -9,6 +10,7 @@ Outputs JSONL with one passage per line:
 
 import bz2
 import json
+import multiprocessing as mp
 import os
 import re
 import sys
@@ -26,7 +28,7 @@ INPUT_FILE = "data/simplewiki-latest-pages-articles.xml.bz2"
 OUTPUT_FILE = "data/passages.jsonl"
 MIN_WORDS = 30
 MAX_WORDS = 300
-TARGET_WORDS = 200
+BATCH_SIZE = 128  # articles per multiprocessing batch
 
 # Simple English Wikipedia: ~250K articles total, ~200K in main namespace
 ESTIMATED_ARTICLES = 200_000
@@ -48,7 +50,7 @@ def clean_wikitext(wikitext: str) -> str:
 
 
 def chunk_text(text: str, title: str) -> list[dict]:
-    """Split text into chunks of ~TARGET_WORDS words, respecting paragraph boundaries."""
+    """Split text into chunks of ~200 words, respecting paragraph boundaries."""
     paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
     chunks = []
     current_chunk = []
@@ -101,6 +103,15 @@ def chunk_text(text: str, title: str) -> list[dict]:
         chunk["id"] = f"{title.replace(' ', '_')}_{i}"
 
     return chunks
+
+
+def process_article(args: tuple[str, str]) -> list[dict]:
+    """Process a single article: clean wikitext → chunk. Runs in worker process."""
+    title, wikitext = args
+    text = clean_wikitext(wikitext)
+    if len(text.split()) < MIN_WORDS:
+        return []
+    return chunk_text(text, title)
 
 
 def iter_articles(filepath: str):
@@ -167,36 +178,48 @@ def main():
     else:
         mode = "w"
 
+    n_workers = max(1, mp.cpu_count() - 1)
     print(f"Input:  {INPUT_FILE}")
-    print(f"Output: {OUTPUT_FILE}\n")
+    print(f"Output: {OUTPUT_FILE}")
+    print(f"Workers: {n_workers}\n")
 
     total_chunks = existing_chunks
 
     pbar = tqdm(
-        iter_articles(INPUT_FILE),
         total=ESTIMATED_ARTICLES,
         desc="Chunking",
         unit=" articles",
         dynamic_ncols=True,
     )
 
-    with open(OUTPUT_FILE, mode) as out:
-        for title, wikitext in pbar:
+    with open(OUTPUT_FILE, mode) as out, mp.Pool(n_workers) as pool:
+        batch = []
+
+        for title, wikitext in iter_articles(INPUT_FILE):
+            pbar.update(1)
+
             if title in processed_titles:
                 continue
 
-            text = clean_wikitext(wikitext)
+            batch.append((title, wikitext))
 
-            if len(text.split()) < MIN_WORDS:
-                continue
+            if len(batch) >= BATCH_SIZE:
+                # Process batch in parallel
+                for chunks in pool.imap_unordered(process_article, batch):
+                    for chunk in chunks:
+                        out.write(json.dumps(chunk) + "\n")
+                        total_chunks += 1
+                pbar.set_postfix(chunks=f"{total_chunks:,}", refresh=False)
+                batch = []
 
-            chunks = chunk_text(text, title)
-            for chunk in chunks:
-                out.write(json.dumps(chunk) + "\n")
-                total_chunks += 1
+        # Process remaining articles
+        if batch:
+            for chunks in pool.imap_unordered(process_article, batch):
+                for chunk in chunks:
+                    out.write(json.dumps(chunk) + "\n")
+                    total_chunks += 1
 
-            pbar.set_postfix(chunks=f"{total_chunks:,}", refresh=False)
-
+    pbar.close()
     print(f"\nTotal chunks: {total_chunks:,}")
     print(f"Output: {OUTPUT_FILE}")
 
