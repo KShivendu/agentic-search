@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::llm::{AnthropicClient, LlmResponse};
+use crate::llm::{LlmClient, LlmResponse};
 
 const SYSTEM_PROMPT: &str = r#"You are a research query planner. Given a complex question, decompose it into 1-4 specific search queries that would help find relevant information. Each query should target a different aspect of the question.
 
@@ -10,12 +10,12 @@ Respond with ONLY a JSON array of query strings. Example:
 Do not include any other text, explanation, or formatting."#;
 
 pub struct Planner {
-    llm: AnthropicClient,
+    llm: LlmClient,
     model: String,
 }
 
 impl Planner {
-    pub fn new(llm: AnthropicClient, model: String) -> Self {
+    pub fn new(llm: LlmClient, model: String) -> Self {
         Self { llm, model }
     }
 

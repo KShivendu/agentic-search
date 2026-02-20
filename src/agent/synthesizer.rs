@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::llm::{AnthropicClient, LlmResponse};
+use crate::llm::{LlmClient, LlmResponse};
 
 const SYSTEM_PROMPT: &str = r#"You are a research synthesizer. Given a question and accumulated research context (passages retrieved across multiple search hops), provide a comprehensive, well-structured answer.
 
@@ -12,12 +12,12 @@ Guidelines:
 - Keep the answer focused and concise (2-4 paragraphs)"#;
 
 pub struct Synthesizer {
-    llm: AnthropicClient,
+    llm: LlmClient,
     model: String,
 }
 
 impl Synthesizer {
-    pub fn new(llm: AnthropicClient, model: String) -> Self {
+    pub fn new(llm: LlmClient, model: String) -> Self {
         Self { llm, model }
     }
 

@@ -1,3 +1,3 @@
-pub mod anthropic;
+pub mod client;
 
-pub use anthropic::{AnthropicClient, LlmResponse};
+pub use client::{LlmClient, LlmResponse};

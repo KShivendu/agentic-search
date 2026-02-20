@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::config::Config;
 use crate::instrumentation::{HopLog, RunLog, RunLogger};
-use crate::llm::AnthropicClient;
+use crate::llm::LlmClient;
 use crate::retrieval::QdrantRetriever;
 
 use planner::Planner;
@@ -25,7 +25,7 @@ pub struct Agent {
 
 impl Agent {
     pub async fn new(config: Config) -> Result<Self> {
-        let llm = AnthropicClient::new(&config.anthropic_api_key);
+        let llm = LlmClient::new(&config.llm_api_key, &config.llm_base_url);
         let retriever = QdrantRetriever::new(
             &config.qdrant_url,
             config.qdrant_api_key.as_deref(),
@@ -101,6 +101,7 @@ impl Agent {
                 llm_latency_ms: llm_latency,
                 llm_input_tokens: reader_response.input_tokens,
                 llm_output_tokens: reader_response.output_tokens,
+                llm_cost: reader_response.cost,
                 decision: match &decision {
                     ReaderDecision::Continue { follow_up_queries } => {
                         format!("continue({})", follow_up_queries.len())
@@ -141,6 +142,8 @@ impl Agent {
             plan_response.input_tokens + synth_response.input_tokens + hops.iter().map(|h| h.llm_input_tokens).sum::<u32>();
         let total_llm_output_tokens: u32 =
             plan_response.output_tokens + synth_response.output_tokens + hops.iter().map(|h| h.llm_output_tokens).sum::<u32>();
+        let total_cost: f64 =
+            plan_response.cost + synth_response.cost + hops.iter().map(|h| h.llm_cost).sum::<f64>();
 
         let run_log = RunLog {
             id: uuid::Uuid::new_v4().to_string(),
@@ -156,6 +159,7 @@ impl Agent {
             total_latency_ms: total_latency,
             total_llm_input_tokens,
             total_llm_output_tokens,
+            total_cost,
             final_answer: answer,
         };
 
