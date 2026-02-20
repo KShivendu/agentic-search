@@ -5,17 +5,17 @@ Multi-hop research agent over a large corpus. Decomposes complex questions into 
 ## Architecture
 
 ```
-Query → Planner (Claude Haiku) → [Embed → Search Qdrant → Reader (Claude Haiku)] × N hops → Synthesizer (Claude Sonnet) → Answer
+Query → Planner → [Search Qdrant → Reader] × N hops → Synthesizer → Answer
 ```
 
-All steps produce structured JSON logs: per-hop latency breakdowns, token usage, retrieval stats, and cost estimates.
+All steps produce structured JSON logs: per-hop latency breakdowns, token usage, retrieval stats, and actual cost (via OpenRouter `usage.cost`).
 
 ## Stack
 
-- **Core system**: Rust (async, `qdrant-client`, `fastembed`, `reqwest`)
-- **Vector DB**: Qdrant with Binary Quantization
-- **Embeddings**: `mxbai-embed-large-v1` (1024d, local ONNX via fastembed)
-- **LLM**: Anthropic Claude (Haiku for hops, Sonnet for synthesis)
+- **Core system**: Rust (async, `qdrant-client`, `reqwest`)
+- **Vector DB**: Qdrant with cloud inference (server-side embedding)
+- **Embeddings**: `mxbai-embed-large-v1` (1024d, embedded server-side by Qdrant)
+- **LLM**: Any model via OpenRouter (OpenAI-compatible chat completions)
 - **Data prep**: Python scripts for Wikipedia dump processing
 
 ## Quick Start
@@ -23,22 +23,36 @@ All steps produce structured JSON logs: per-hop latency breakdowns, token usage,
 ```bash
 # 1. Set up environment
 cp .env.example .env
-# Edit .env with your ANTHROPIC_API_KEY
+# Edit .env with your LLM_API_KEY (OpenRouter) and Qdrant credentials
 
-# 2. Start Qdrant
-docker run -p 6333:6333 -p 6334:6334 qdrant/qdrant
-
-# 3. Prepare corpus (Simple English Wikipedia)
-pip install mwparserfromhell sentence-transformers qdrant-client tqdm
+# 2. Prepare corpus (Simple English Wikipedia)
+pip install mwparserfromhell sentence-transformers qdrant-client tqdm python-dotenv
 python scripts/download_wiki.py
 python scripts/chunk_wiki.py
-python scripts/embed_and_upload.py
+python scripts/embed_and_upload.py --cloud-inference
 
-# 4. Run
+# 3. Run
 cargo run -- ask "What connections exist between transistors and the space race?"
 cargo run -- -v ask "How did the printing press influence the Protestant Reformation?"
 cargo run -- eval eval/questions.jsonl
 ```
+
+## Configuration
+
+All config via `.env`. Key variables:
+
+| Variable | Description | Default |
+|---|---|---|
+| `LLM_API_KEY` | OpenRouter API key (or any OpenAI-compatible provider) | *required* |
+| `LLM_BASE_URL` | LLM endpoint | `https://openrouter.ai/api/v1/chat/completions` |
+| `QDRANT_URL` | Qdrant gRPC endpoint | `http://localhost:6334` |
+| `QDRANT_API_KEY` | Qdrant API key (for cloud) | *optional* |
+| `PLANNER_MODEL` | Model for query decomposition | `anthropic/claude-haiku-4-5-20241022` |
+| `READER_MODEL` | Model for passage evaluation | `anthropic/claude-haiku-4-5-20241022` |
+| `SYNTHESIZER_MODEL` | Model for final answer | `anthropic/claude-sonnet-4-20250514` |
+| `EMBEDDING_MODEL` | Qdrant cloud inference model | `mixedbread-ai/mxbai-embed-large-v1` |
+| `MAX_HOPS` | Maximum retrieval hops | `7` |
+| `TOP_K` | Results per search | `10` |
 
 ## Project Structure
 
@@ -51,10 +65,9 @@ src/
 │   ├── reader.rs           # Passage evaluation + follow-up decisions
 │   └── synthesizer.rs      # Final answer generation
 ├── retrieval/
-│   ├── qdrant.rs           # Vector search
-│   └── embedder.rs         # Local embedding (fastembed)
+│   └── qdrant.rs           # Vector search (cloud inference)
 ├── llm/
-│   └── anthropic.rs        # Claude API client
+│   └── client.rs           # OpenAI-compatible LLM client
 └── instrumentation/
     └── logger.rs           # Structured JSON logging
 
