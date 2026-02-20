@@ -5,6 +5,8 @@ use qdrant_client::Qdrant;
 #[derive(Debug, Clone)]
 pub struct Passage {
     pub text: String,
+    pub title: String,
+    pub chunk_index: Option<u64>,
 }
 
 pub struct QdrantRetriever {
@@ -62,8 +64,21 @@ impl QdrantRetriever {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
                     .unwrap_or_default();
+                let title = payload
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_default();
+                let chunk_index = payload
+                    .get("chunk_index")
+                    .and_then(|v| v.as_integer())
+                    .map(|i| i as u64);
 
-                Passage { text }
+                Passage {
+                    text,
+                    title,
+                    chunk_index,
+                }
             })
             .collect()
     }

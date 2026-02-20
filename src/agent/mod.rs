@@ -9,7 +9,7 @@ use std::io::Write;
 use std::time::Instant;
 
 use crate::config::Config;
-use crate::instrumentation::{HopLog, RunLog, RunLogger};
+use crate::instrumentation::{HopLog, RunLog, RunLogger, SourceRef};
 use crate::llm::{LlmClient, StreamEvent};
 use crate::retrieval::QdrantRetriever;
 
@@ -64,6 +64,7 @@ impl Agent {
         let run_start = Instant::now();
         let mut hops: Vec<HopLog> = Vec::new();
         let mut accumulated_context: Vec<String> = Vec::new();
+        let mut source_refs: Vec<SourceRef> = Vec::new();
 
         // Step 1: Plan initial queries
         let spinner = if stream {
@@ -128,6 +129,10 @@ impl Agent {
             let tokens_in_passages: u32 = passage_texts.iter().map(|t| (t.len() / 4) as u32).sum();
 
             accumulated_context.extend(passage_texts.clone());
+            source_refs.extend(passages.iter().map(|p| SourceRef {
+                title: p.title.clone(),
+                chunk_index: p.chunk_index,
+            }));
 
             // Reader decides: continue or synthesize
             let llm_start = Instant::now();
@@ -281,6 +286,7 @@ impl Agent {
             total_llm_output_tokens,
             total_cost,
             final_answer: answer,
+            sources: source_refs,
         };
 
         self.logger.write(&run_log)?;
