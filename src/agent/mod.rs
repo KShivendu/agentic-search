@@ -8,7 +8,7 @@ use std::time::Instant;
 use crate::config::Config;
 use crate::instrumentation::{HopLog, RunLog, RunLogger};
 use crate::llm::AnthropicClient;
-use crate::retrieval::{Embedder, QdrantRetriever};
+use crate::retrieval::QdrantRetriever;
 
 use planner::Planner;
 use reader::{Reader, ReaderDecision};
@@ -19,7 +19,6 @@ pub struct Agent {
     reader: Reader,
     synthesizer: Synthesizer,
     retriever: QdrantRetriever,
-    embedder: Embedder,
     config: Config,
     logger: RunLogger,
 }
@@ -27,8 +26,13 @@ pub struct Agent {
 impl Agent {
     pub async fn new(config: Config) -> Result<Self> {
         let llm = AnthropicClient::new(&config.anthropic_api_key);
-        let retriever = QdrantRetriever::new(&config.qdrant_url, &config.qdrant_collection).await?;
-        let embedder = Embedder::new(&config.embedding_model)?;
+        let retriever = QdrantRetriever::new(
+            &config.qdrant_url,
+            config.qdrant_api_key.as_deref(),
+            &config.qdrant_collection,
+            &config.embedding_model,
+        )
+        .await?;
         let logger = RunLogger::new("logs")?;
 
         Ok(Self {
@@ -36,7 +40,6 @@ impl Agent {
             reader: Reader::new(llm.clone(), config.reader_model.clone()),
             synthesizer: Synthesizer::new(llm, config.synthesizer_model.clone()),
             retriever,
-            embedder,
             config,
             logger,
         })
@@ -68,25 +71,16 @@ impl Agent {
 
             let hop_start = Instant::now();
 
-            // Embed queries
-            let embed_start = Instant::now();
-            let query_text = pending_queries.join(" ");
-            let embeddings = self.embedder.embed(&[&query_text])?;
-            let embedding_latency = embed_start.elapsed().as_millis() as u64;
-
-            // Search Qdrant
+            // Search Qdrant (cloud inference handles embedding server-side)
             let search_start = Instant::now();
-            let passages = self
-                .retriever
-                .search(&embeddings[0], self.config.top_k)
-                .await?;
+            let query_text = pending_queries.join(" ");
+            let passages = self.retriever.search(&query_text, self.config.top_k).await?;
             let search_latency = search_start.elapsed().as_millis() as u64;
             let num_results = passages.len();
 
             let passage_texts: Vec<String> = passages.iter().map(|p| p.text.clone()).collect();
-            let tokens_in_passages: u32 = passage_texts.iter().map(|t| (t.len() / 4) as u32).collect::<Vec<_>>().iter().sum();
+            let tokens_in_passages: u32 = passage_texts.iter().map(|t| (t.len() / 4) as u32).sum();
 
-            // Add to accumulated context
             accumulated_context.extend(passage_texts.clone());
 
             // Reader decides: continue or synthesize
@@ -100,7 +94,7 @@ impl Agent {
             let hop_log = HopLog {
                 hop_number: hop_number as u32,
                 queries: pending_queries.clone(),
-                embedding_latency_ms: embedding_latency,
+                embedding_latency_ms: 0,
                 search_latency_ms: search_latency,
                 num_results: num_results as u32,
                 tokens_in_passages,
@@ -118,8 +112,8 @@ impl Agent {
 
             if verbose {
                 eprintln!(
-                    "[hop {}] {} results, embed={}ms search={}ms llm={}ms → {}",
-                    hop_number, num_results, embedding_latency, search_latency, llm_latency, hop_log.decision
+                    "[hop {}] {} results, search={}ms llm={}ms → {}",
+                    hop_number, num_results, search_latency, llm_latency, hop_log.decision
                 );
             }
 
