@@ -19,3 +19,6 @@ logs/*.jsonl
 
 # Data
 data/
+
+# Plans/notes
+PLAN.md
