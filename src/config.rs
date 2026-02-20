@@ -4,11 +4,13 @@ use anyhow::{Context, Result};
 pub struct Config {
     pub anthropic_api_key: String,
     pub qdrant_url: String,
+    pub qdrant_api_key: Option<String>,
     pub qdrant_collection: String,
     pub planner_model: String,
     pub reader_model: String,
     pub synthesizer_model: String,
     pub embedding_model: String,
+    pub cloud_inference: bool,
     pub max_hops: usize,
     pub top_k: u64,
 }
@@ -22,6 +24,7 @@ impl Config {
                 .context("ANTHROPIC_API_KEY must be set")?,
             qdrant_url: std::env::var("QDRANT_URL")
                 .unwrap_or_else(|_| "http://localhost:6334".into()),
+            qdrant_api_key: std::env::var("QDRANT_API_KEY").ok(),
             qdrant_collection: std::env::var("QDRANT_COLLECTION")
                 .unwrap_or_else(|_| "wiki_passages".into()),
             planner_model: std::env::var("PLANNER_MODEL")
@@ -31,7 +34,11 @@ impl Config {
             synthesizer_model: std::env::var("SYNTHESIZER_MODEL")
                 .unwrap_or_else(|_| "claude-sonnet-4-20250514".into()),
             embedding_model: std::env::var("EMBEDDING_MODEL")
-                .unwrap_or_else(|_| "all-MiniLM-L6-v2".into()),
+                .unwrap_or_else(|_| "mixedbread-ai/mxbai-embed-large-v1".into()),
+            cloud_inference: std::env::var("CLOUD_INFERENCE")
+                .unwrap_or_else(|_| "true".into())
+                .parse()
+                .unwrap_or(true),
             max_hops: std::env::var("MAX_HOPS")
                 .unwrap_or_else(|_| "7".into())
                 .parse()
