@@ -1,3 +1,3 @@
 pub mod logger;
 
-pub use logger::{HopLog, RunLog, RunLogger};
+pub use logger::{HopLog, RunLog, RunLogger, SourceRef};

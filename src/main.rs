@@ -65,7 +65,25 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Ask { question } => {
             let run_log = agent.ask(&question, cli.verbose, true).await?;
-            // Answer was already streamed to stdout; print summary dimmed
+            // Print source legend: each [N] maps to a title + chunk
+            if !run_log.sources.is_empty() {
+                eprintln!("\n{}", "Sources:".dimmed());
+                for (i, src) in run_log.sources.iter().enumerate() {
+                    if src.title.is_empty() {
+                        continue;
+                    }
+                    let chunk_str = match src.chunk_index {
+                        Some(idx) => format!(" (chunk {})", idx),
+                        None => String::new(),
+                    };
+                    eprintln!(
+                        "  {} {}{}",
+                        format!("[{}]", i + 1).dimmed(),
+                        src.title.dimmed(),
+                        chunk_str.dimmed(),
+                    );
+                }
+            }
             eprintln!("\n{}", run_log.summary().dimmed());
         }
         Commands::Eval { path } => {
