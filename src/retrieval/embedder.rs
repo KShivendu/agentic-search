@@ -8,6 +8,7 @@ pub struct Embedder {
 impl Embedder {
     pub fn new(model_name: &str) -> Result<Self> {
         let model_type = match model_name {
+            "sentence-transformers/all-MiniLM-L6-v2" | "all-MiniLM-L6-v2" => EmbeddingModel::AllMiniLML6V2,
             "mixedbread-ai/mxbai-embed-large-v1" => EmbeddingModel::MxbaiEmbedLargeV1,
             "nomic-ai/nomic-embed-text-v1.5" => EmbeddingModel::NomicEmbedTextV15,
             _ => anyhow::bail!("Unsupported embedding model: {}", model_name),
