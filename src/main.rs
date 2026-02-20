@@ -6,6 +6,7 @@ mod retrieval;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use colored::Colorize;
 use std::io::BufRead;
 
 use agent::Agent;
@@ -63,9 +64,9 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Ask { question } => {
-            let run_log = agent.ask(&question, cli.verbose).await?;
-            println!("\n{}\n", run_log.final_answer);
-            println!("{}", run_log.summary());
+            let run_log = agent.ask(&question, cli.verbose, true).await?;
+            // Answer was already streamed to stdout; print summary dimmed
+            eprintln!("\n{}", run_log.summary().dimmed());
         }
         Commands::Eval { path } => {
             let file = std::fs::File::open(&path)
@@ -86,7 +87,7 @@ async fn main() -> Result<()> {
 
                 eprintln!("\n[{}/...] {}", i + 1, eq.question);
 
-                match agent.ask(&eq.question, cli.verbose).await {
+                match agent.ask(&eq.question, cli.verbose, false).await {
                     Ok(run_log) => {
                         println!("  {}", run_log.summary());
                         run_logs.push(run_log);
