@@ -1,0 +1,21 @@
+# Rust
+/target
+Cargo.lock
+
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv
+
+# Environment
+.env
+
+# Logs
+logs/*.jsonl
+
+# Data
+data/
