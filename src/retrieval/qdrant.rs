@@ -5,8 +5,6 @@ use qdrant_client::Qdrant;
 #[derive(Debug, Clone)]
 pub struct Passage {
     pub text: String,
-    pub title: String,
-    pub score: f32,
 }
 
 pub struct QdrantRetriever {
@@ -16,7 +14,12 @@ pub struct QdrantRetriever {
 }
 
 impl QdrantRetriever {
-    pub async fn new(url: &str, api_key: Option<&str>, collection: &str, embedding_model: &str) -> Result<Self> {
+    pub async fn new(
+        url: &str,
+        api_key: Option<&str>,
+        collection: &str,
+        embedding_model: &str,
+    ) -> Result<Self> {
         let mut builder = Qdrant::from_url(url);
         if let Some(key) = api_key {
             builder = builder.api_key(key);
@@ -59,17 +62,8 @@ impl QdrantRetriever {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
                     .unwrap_or_default();
-                let title = payload
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string())
-                    .unwrap_or_default();
 
-                Passage {
-                    text,
-                    title,
-                    score: point.score,
-                }
+                Passage { text }
             })
             .collect()
     }
