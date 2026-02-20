@@ -13,7 +13,10 @@ use config::Config;
 use instrumentation::RunLog;
 
 #[derive(Parser)]
-#[command(name = "agentic-search", about = "Multi-hop research agent over a large corpus")]
+#[command(
+    name = "agentic-search",
+    about = "Multi-hop research agent over a large corpus"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -50,8 +53,7 @@ struct EvalQuestion {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -66,8 +68,8 @@ async fn main() -> Result<()> {
             println!("{}", run_log.summary());
         }
         Commands::Eval { path } => {
-            let file =
-                std::fs::File::open(&path).context(format!("Failed to open eval file: {}", path))?;
+            let file = std::fs::File::open(&path)
+                .context(format!("Failed to open eval file: {}", path))?;
             let reader = std::io::BufReader::new(file);
 
             let mut run_logs: Vec<RunLog> = Vec::new();
@@ -79,8 +81,8 @@ async fn main() -> Result<()> {
                     continue;
                 }
 
-                let eq: EvalQuestion =
-                    serde_json::from_str(&line).context(format!("Failed to parse line {}", i + 1))?;
+                let eq: EvalQuestion = serde_json::from_str(&line)
+                    .context(format!("Failed to parse line {}", i + 1))?;
 
                 eprintln!("\n[{}/...] {}", i + 1, eq.question);
 
@@ -100,8 +102,8 @@ async fn main() -> Result<()> {
                 println!("\n=== Evaluation Summary ===");
                 println!("Questions: {} (errors: {})", run_logs.len(), errors);
 
-                let avg_hops =
-                    run_logs.iter().map(|r| r.hops.len()).sum::<usize>() as f64 / run_logs.len() as f64;
+                let avg_hops = run_logs.iter().map(|r| r.hops.len()).sum::<usize>() as f64
+                    / run_logs.len() as f64;
                 let avg_latency = run_logs.iter().map(|r| r.total_latency_ms).sum::<u64>() as f64
                     / run_logs.len() as f64;
                 let total_tokens: u32 = run_logs.iter().map(|r| r.total_tokens()).sum();

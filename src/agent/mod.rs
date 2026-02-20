@@ -56,7 +56,11 @@ impl Agent {
         let plan_latency = plan_start.elapsed().as_millis() as u64;
 
         if verbose {
-            eprintln!("[planner] Generated {} queries in {}ms", queries.len(), plan_latency);
+            eprintln!(
+                "[planner] Generated {} queries in {}ms",
+                queries.len(),
+                plan_latency
+            );
             for q in &queries {
                 eprintln!("  - {}", q);
             }
@@ -74,7 +78,10 @@ impl Agent {
             // Search Qdrant (cloud inference handles embedding server-side)
             let search_start = Instant::now();
             let query_text = pending_queries.join(" ");
-            let passages = self.retriever.search(&query_text, self.config.top_k).await?;
+            let passages = self
+                .retriever
+                .search(&query_text, self.config.top_k)
+                .await?;
             let search_latency = search_start.elapsed().as_millis() as u64;
             let num_results = passages.len();
 
@@ -130,7 +137,10 @@ impl Agent {
 
         // Synthesize final answer
         let synth_start = Instant::now();
-        let (answer, synth_response) = self.synthesizer.synthesize(question, &accumulated_context).await?;
+        let (answer, synth_response) = self
+            .synthesizer
+            .synthesize(question, &accumulated_context)
+            .await?;
         let synth_latency = synth_start.elapsed().as_millis() as u64;
 
         if verbose {
@@ -138,10 +148,12 @@ impl Agent {
         }
 
         let total_latency = run_start.elapsed().as_millis() as u64;
-        let total_llm_input_tokens: u32 =
-            plan_response.input_tokens + synth_response.input_tokens + hops.iter().map(|h| h.llm_input_tokens).sum::<u32>();
-        let total_llm_output_tokens: u32 =
-            plan_response.output_tokens + synth_response.output_tokens + hops.iter().map(|h| h.llm_output_tokens).sum::<u32>();
+        let total_llm_input_tokens: u32 = plan_response.input_tokens
+            + synth_response.input_tokens
+            + hops.iter().map(|h| h.llm_input_tokens).sum::<u32>();
+        let total_llm_output_tokens: u32 = plan_response.output_tokens
+            + synth_response.output_tokens
+            + hops.iter().map(|h| h.llm_output_tokens).sum::<u32>();
         let total_cost: f64 =
             plan_response.cost + synth_response.cost + hops.iter().map(|h| h.llm_cost).sum::<f64>();
 
