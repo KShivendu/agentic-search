@@ -15,6 +15,7 @@ pub struct HopLog {
     pub llm_latency_ms: u64,
     pub llm_input_tokens: u32,
     pub llm_output_tokens: u32,
+    pub llm_cost: f64,
     pub decision: String,
     pub total_hop_latency_ms: u64,
 }
@@ -34,6 +35,7 @@ pub struct RunLog {
     pub total_latency_ms: u64,
     pub total_llm_input_tokens: u32,
     pub total_llm_output_tokens: u32,
+    pub total_cost: f64,
     pub final_answer: String,
 }
 
@@ -42,20 +44,9 @@ impl RunLog {
         self.total_llm_input_tokens + self.total_llm_output_tokens
     }
 
-    /// Estimate cost in USD based on Anthropic pricing.
-    /// Haiku: $0.25/MTok input, $1.25/MTok output
-    /// Sonnet: $3/MTok input, $15/MTok output
-    /// This is a rough estimate assuming hops use Haiku and synthesis uses Sonnet.
-    pub fn estimated_cost(&self) -> f64 {
-        let haiku_input = (self.plan_input_tokens
-            + self.hops.iter().map(|h| h.llm_input_tokens).sum::<u32>()) as f64;
-        let haiku_output = (self.plan_output_tokens
-            + self.hops.iter().map(|h| h.llm_output_tokens).sum::<u32>()) as f64;
-        let sonnet_input = self.synthesis_input_tokens as f64;
-        let sonnet_output = self.synthesis_output_tokens as f64;
-
-        (haiku_input * 0.25 + haiku_output * 1.25 + sonnet_input * 3.0 + sonnet_output * 15.0)
-            / 1_000_000.0
+    /// Actual cost in USD as reported by the LLM API (e.g. OpenRouter usage.cost).
+    pub fn cost(&self) -> f64 {
+        self.total_cost
     }
 
     pub fn summary(&self) -> String {
@@ -65,7 +56,7 @@ impl RunLog {
             self.total_latency_ms as f64 / 1000.0,
             self.hops.iter().map(|h| h.tokens_in_passages).sum::<u32>(),
             self.total_tokens(),
-            self.estimated_cost(),
+            self.cost(),
         )
     }
 }

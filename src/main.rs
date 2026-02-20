@@ -105,7 +105,7 @@ async fn main() -> Result<()> {
                 let avg_latency = run_logs.iter().map(|r| r.total_latency_ms).sum::<u64>() as f64
                     / run_logs.len() as f64;
                 let total_tokens: u32 = run_logs.iter().map(|r| r.total_tokens()).sum();
-                let total_cost: f64 = run_logs.iter().map(|r| r.estimated_cost()).sum();
+                let total_cost: f64 = run_logs.iter().map(|r| r.cost()).sum();
 
                 println!("Avg hops: {:.1}", avg_hops);
                 println!("Avg latency: {:.1}s", avg_latency / 1000.0);

@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::llm::{AnthropicClient, LlmResponse};
+use crate::llm::{LlmClient, LlmResponse};
 
 const SYSTEM_PROMPT: &str = r#"You are a research reader. You are given a question, retrieved passages, and context accumulated from previous research hops.
 
@@ -32,12 +32,12 @@ struct ReaderOutput {
 }
 
 pub struct Reader {
-    llm: AnthropicClient,
+    llm: LlmClient,
     model: String,
 }
 
 impl Reader {
-    pub fn new(llm: AnthropicClient, model: String) -> Self {
+    pub fn new(llm: LlmClient, model: String) -> Self {
         Self { llm, model }
     }
 
