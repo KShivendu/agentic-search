@@ -1,3 +1,3 @@
 pub mod client;
 
-pub use client::{LlmClient, LlmResponse};
+pub use client::{LlmClient, LlmResponse, StreamEvent};

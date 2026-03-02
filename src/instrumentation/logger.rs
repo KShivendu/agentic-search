@@ -21,6 +21,12 @@ pub struct HopLog {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceRef {
+    pub title: String,
+    pub chunk_index: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunLog {
     pub id: String,
     pub timestamp: String,
@@ -37,6 +43,8 @@ pub struct RunLog {
     pub total_llm_output_tokens: u32,
     pub total_cost: f64,
     pub final_answer: String,
+    pub sources: Vec<SourceRef>,
+    pub passages: Vec<String>,
 }
 
 impl RunLog {
