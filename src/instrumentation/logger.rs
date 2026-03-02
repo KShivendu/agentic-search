@@ -44,6 +44,7 @@ pub struct RunLog {
     pub total_cost: f64,
     pub final_answer: String,
     pub sources: Vec<SourceRef>,
+    pub passages: Vec<String>,
 }
 
 impl RunLog {
