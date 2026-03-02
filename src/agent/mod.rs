@@ -287,6 +287,7 @@ impl Agent {
             total_cost,
             final_answer: answer,
             sources: source_refs,
+            passages: accumulated_context,
         };
 
         self.logger.write(&run_log)?;
