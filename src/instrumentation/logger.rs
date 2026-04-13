@@ -22,6 +22,7 @@ pub struct HopLog {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceRef {
+    pub point_id: String,
     pub title: String,
     pub chunk_index: Option<u64>,
 }

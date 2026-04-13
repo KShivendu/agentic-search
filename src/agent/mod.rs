@@ -130,6 +130,7 @@ impl Agent {
 
             accumulated_context.extend(passage_texts.clone());
             source_refs.extend(passages.iter().map(|p| SourceRef {
+                point_id: p.point_id.clone(),
                 title: p.title.clone(),
                 chunk_index: p.chunk_index,
             }));

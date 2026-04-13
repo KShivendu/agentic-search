@@ -76,11 +76,17 @@ async fn main() -> Result<()> {
                         Some(idx) => format!(" (chunk {})", idx),
                         None => String::new(),
                     };
+                    let id_str = if src.point_id.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" [id: {}]", src.point_id)
+                    };
                     eprintln!(
-                        "  {} {}{}",
+                        "  {} {}{}{}",
                         format!("[{}]", i + 1).dimmed(),
                         src.title.dimmed(),
                         chunk_str.dimmed(),
+                        id_str.dimmed(),
                     );
                 }
             }

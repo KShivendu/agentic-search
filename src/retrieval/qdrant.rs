@@ -4,6 +4,7 @@ use qdrant_client::Qdrant;
 
 #[derive(Debug, Clone)]
 pub struct Passage {
+    pub point_id: String,
     pub text: String,
     pub title: String,
     pub chunk_index: Option<u64>,
@@ -55,9 +56,20 @@ impl QdrantRetriever {
     }
 
     fn extract_passages(points: Vec<ScoredPoint>) -> Vec<Passage> {
+        use qdrant_client::qdrant::point_id::PointIdOptions;
+
         points
             .into_iter()
             .map(|point| {
+                let point_id = point
+                    .id
+                    .and_then(|pid| pid.point_id_options)
+                    .map(|opts| match opts {
+                        PointIdOptions::Num(n) => n.to_string(),
+                        PointIdOptions::Uuid(s) => s,
+                    })
+                    .unwrap_or_default();
+
                 let payload = point.payload;
                 let text = payload
                     .get("text")
@@ -75,6 +87,7 @@ impl QdrantRetriever {
                     .map(|i| i as u64);
 
                 Passage {
+                    point_id,
                     text,
                     title,
                     chunk_index,
