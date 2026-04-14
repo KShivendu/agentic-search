@@ -22,3 +22,9 @@ data/
 
 # Plans/notes
 PLAN.md
+
+# Cache
+.fastembed_cache/
+
+# Terminal recordings
+*.cast
