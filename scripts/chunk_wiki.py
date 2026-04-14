@@ -27,7 +27,7 @@ except ImportError:
 INPUT_FILE = "data/simplewiki-latest-pages-articles.xml.bz2"
 OUTPUT_FILE = "data/passages.jsonl"
 MIN_WORDS = 30
-MAX_WORDS = 300
+MAX_WORDS = 380  # ~505 tokens (1 word ≈ 1.33 tokens), fits within mxbai-embed-large-v1's 512 token limit
 BATCH_SIZE = 128  # articles per multiprocessing batch
 
 # Simple English Wikipedia: ~250K articles total, ~200K in main namespace
