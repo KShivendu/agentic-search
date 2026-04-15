@@ -84,17 +84,12 @@ impl Agent {
         }
 
         if stream {
-            let header = if verbose {
-                format!(
-                    "{} {} queries {}",
-                    "Planning".cyan().bold(),
-                    queries.len(),
-                    format!("({}ms)", plan_latency).dimmed(),
-                )
-            } else {
-                format!("{} {} queries", "Planning".cyan().bold(), queries.len())
-            };
-            eprintln!("{}", header);
+            eprintln!(
+                "{} {} queries {}",
+                "Planning".cyan().bold(),
+                queries.len(),
+                format!("({}ms)", plan_latency).dimmed(),
+            );
             for (i, q) in queries.iter().enumerate() {
                 eprintln!("  {}  {}", format!("{}.", i + 1).dimmed(), q);
             }
@@ -121,16 +116,24 @@ impl Agent {
             };
 
             let search_start = Instant::now();
-            let search_futures = pending_queries
-                .iter()
-                .map(|q| self.retriever.search(q, self.config.top_k));
+            let search_futures = pending_queries.iter().map(|q| {
+                let retriever = &self.retriever;
+                let top_k = self.config.top_k;
+                async move {
+                    let t = Instant::now();
+                    let result = retriever.search(q, top_k).await;
+                    (result, t.elapsed().as_millis() as u64)
+                }
+            });
             let search_results = join_all(search_futures).await;
             let search_latency = search_start.elapsed().as_millis() as u64;
 
             // Merge results from all queries, deduplicating by point_id
             let mut seen_ids = std::collections::HashSet::new();
             let mut passages = Vec::new();
-            for result in search_results {
+            let mut per_query_latencies: Vec<u64> = Vec::new();
+            for (result, latency) in search_results {
+                per_query_latencies.push(latency);
                 for passage in result? {
                     if seen_ids.insert(passage.point_id.clone()) {
                         passages.push(passage);
@@ -188,16 +191,18 @@ impl Agent {
             };
 
             if stream {
+                let search_detail = per_query_latencies
+                    .iter()
+                    .map(|ms| format!("{}ms", ms))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let latency_info = if verbose {
                     format!(
                         " {}",
-                        format!("(search {}ms, read {}ms)", search_latency, llm_latency).dimmed()
+                        format!("(search [{}] read {}ms)", search_detail, llm_latency).dimmed()
                     )
                 } else {
-                    format!(
-                        " {}",
-                        format!("({}ms)", hop_start.elapsed().as_millis()).dimmed()
-                    )
+                    format!(" {}", format!("(search [{}])", search_detail).dimmed())
                 };
                 match &decision {
                     ReaderDecision::Continue { follow_up_queries } => {
