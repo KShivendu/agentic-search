@@ -13,6 +13,9 @@ pub struct Config {
     pub embedding_model: String,
     pub max_hops: usize,
     pub top_k: u64,
+    pub cloud_inference: bool,
+    pub embedding_api_key: String,
+    pub embedding_base_url: String,
 }
 
 impl Config {
@@ -44,6 +47,15 @@ impl Config {
                 .unwrap_or_else(|_| "10".into())
                 .parse()
                 .context("TOP_K must be a number")?,
+            cloud_inference: std::env::var("CLOUD_INFERENCE")
+                .unwrap_or_else(|_| "true".into())
+                .parse()
+                .context("CLOUD_INFERENCE must be true or false")?,
+            embedding_api_key: std::env::var("EMBEDDING_API_KEY")
+                .context("EMBEDDING_API_KEY must be set when CLOUD_INFERENCE=false")
+                .unwrap_or_default(),
+            embedding_base_url: std::env::var("EMBEDDING_BASE_URL")
+                .unwrap_or_else(|_| "https://api.cohere.com/v2/embed".into()),
         })
     }
 }

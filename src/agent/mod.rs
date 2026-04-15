@@ -48,6 +48,9 @@ impl Agent {
             config.qdrant_api_key.as_deref(),
             &config.qdrant_collection,
             &config.embedding_model,
+            config.cloud_inference,
+            &config.embedding_api_key,
+            &config.embedding_base_url,
         )
         .await?;
         let logger = RunLogger::new("logs")?;

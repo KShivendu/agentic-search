@@ -38,7 +38,7 @@ CHUNKS_FILE = "data/browsecomp_passages.jsonl"  # local cache of chunked passage
 OUTPUT_FILE = "eval/browsecomp_questions.jsonl"
 MIN_WORDS = 30
 MAX_WORDS = 380  # ~505 tokens (1 word ≈ 1.33 tokens), fits within mxbai-embed-large-v1's 512 token limit
-UPLOAD_BATCH_SIZE = 512  # larger batches = fewer round-trips to Qdrant Cloud
+UPLOAD_BATCH_SIZE = 384  # Qdrant Cloud inference limit: 2MB payload; 512 passages ≈ 2.1MB → 384 ≈ 1.57MB
 
 MODEL_NAME = os.environ.get("EMBEDDING_MODEL", "mixedbread-ai/mxbai-embed-large-v1")
 QDRANT_URL = os.environ.get("QDRANT_URL", "http://localhost:6333")
@@ -176,31 +176,40 @@ def ensure_collection(client, vector_dim: int) -> int:
     return 0
 
 
-def upload_chunks(client, chunks_file: str):
-    """Upload pre-chunked local JSONL to Qdrant with cloud inference."""
+def _worker_upload(args: tuple):
+    """Upload a line range of chunks_file. Runs in a worker process."""
+    from qdrant_client import QdrantClient
     from qdrant_client.http.models import Document
-    from qdrant_client.models import OptimizersConfigDiff, PointStruct
+    from qdrant_client.models import PointStruct
 
-    MODEL_DIMS = {"mixedbread-ai/mxbai-embed-large-v1": 1024, "all-MiniLM-L6-v2": 384}
-    vector_dim = MODEL_DIMS.get(MODEL_NAME, 1024)
+    worker_id, chunks_file, start_line, end_line = args
 
-    existing_points = ensure_collection(client, vector_dim)
+    client = QdrantClient(
+        url=QDRANT_URL.replace("6334", "6333"),
+        api_key=QDRANT_API_KEY,
+        timeout=120,
+        cloud_inference=True,
+    )
 
-    # Count total lines for progress
-    print("Counting passages...")
-    total_lines = sum(1 for _ in open(chunks_file))
-    skip = (existing_points // UPLOAD_BATCH_SIZE) * UPLOAD_BATCH_SIZE
-    print(f"Total passages: {total_lines:,} | Already uploaded: {existing_points:,} | Skipping: {skip:,}")
-
+    count = end_line - start_line
     batch: list[PointStruct] = []
     uploaded = 0
 
-    pbar = tqdm(total=total_lines - skip, desc="Uploading", unit=" passages", dynamic_ncols=True)
+    pbar = tqdm(
+        total=count,
+        desc=f"Worker {worker_id} [{start_line:,}-{end_line:,}]",
+        unit=" passages",
+        position=worker_id,
+        dynamic_ncols=True,
+        leave=True,
+    )
 
     with open(chunks_file) as f:
         for i, line in enumerate(f):
-            if i < skip:
+            if i < start_line:
                 continue
+            if i >= end_line:
+                break
             chunk = json.loads(line)
             point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, chunk["id"]))
             batch.append(
@@ -218,17 +227,59 @@ def upload_chunks(client, chunks_file: str):
             )
 
             if len(batch) >= UPLOAD_BATCH_SIZE:
-                is_last = (i >= total_lines - 1)
-                client.upsert(collection_name=COLLECTION_NAME, points=batch, wait=is_last)
+                try:
+                    client.upsert(collection_name=COLLECTION_NAME, points=batch, wait=False)
+                except Exception as e:
+                    raise RuntimeError(f"Worker {worker_id} upsert failed: {e}") from None
                 uploaded += len(batch)
                 pbar.update(len(batch))
                 batch = []
 
     if batch:
-        client.upsert(collection_name=COLLECTION_NAME, points=batch, wait=True)
+        try:
+            client.upsert(collection_name=COLLECTION_NAME, points=batch, wait=True)
+        except Exception as e:
+            raise RuntimeError(f"Worker {worker_id} final upsert failed: {e}") from None
         pbar.update(len(batch))
 
     pbar.close()
+    print(f"\nWorker {worker_id} done: {uploaded:,} passages uploaded")
+    return uploaded
+
+
+def upload_chunks(client, chunks_file: str, n_workers: int = 1):
+    """Upload pre-chunked local JSONL to Qdrant with cloud inference."""
+    import multiprocessing as mp
+    from qdrant_client.models import OptimizersConfigDiff
+
+    MODEL_DIMS = {"mixedbread-ai/mxbai-embed-large-v1": 1024, "all-MiniLM-L6-v2": 384}
+    vector_dim = MODEL_DIMS.get(MODEL_NAME, 1024)
+
+    existing_points = ensure_collection(client, vector_dim)
+
+    print("Counting passages...")
+    total_lines = sum(1 for _ in open(chunks_file))
+    # Round start down to batch boundary so we don't re-embed partial batches
+    start_line = (existing_points // UPLOAD_BATCH_SIZE) * UPLOAD_BATCH_SIZE
+    remaining = total_lines - start_line
+    print(f"Total passages: {total_lines:,} | Already uploaded: {existing_points:,} | Starting from line: {start_line:,} | Workers: {n_workers}")
+
+    if n_workers == 1:
+        _worker_upload((0, chunks_file, start_line, total_lines))
+    else:
+        # Split the full file evenly from line 0. Parallel workers each cover a
+        # fixed region regardless of prior run state. Already-uploaded passages
+        # are re-upserted idempotently (same point_id = overwrite, safe).
+        # This avoids gaps when a previous parallel run died mid-way.
+        slice_size = total_lines // n_workers
+        ranges = [
+            (w, chunks_file, w * slice_size,
+             (w + 1) * slice_size if w < n_workers - 1 else total_lines)
+            for w in range(n_workers)
+        ]
+        with mp.Pool(n_workers) as pool:
+            pool.map(_worker_upload, ranges)
+
     print("\nRe-enabling indexing...")
     client.update_collection(
         collection_name=COLLECTION_NAME,
@@ -238,14 +289,14 @@ def upload_chunks(client, chunks_file: str):
     print(f"Done. {info.points_count:,} points in '{COLLECTION_NAME}'.")
 
 
-def ingest_corpus(client):
+def ingest_corpus(client, n_workers: int = 1):
     """Full ingest: chunk locally first, then upload."""
     if not os.path.exists(CHUNKS_FILE):
         download_and_chunk(CHUNKS_FILE)
     else:
         lines = sum(1 for _ in open(CHUNKS_FILE))
         print(f"Using existing chunks file: {CHUNKS_FILE} ({lines:,} passages)")
-    upload_chunks(client, CHUNKS_FILE)
+    upload_chunks(client, CHUNKS_FILE, n_workers=n_workers)
 
 
 # ── Query conversion ───────────────────────────────────────────────────────────
@@ -318,6 +369,12 @@ def main():
         default="/tmp/BrowseComp-Plus/topics-qrels/qrel_golds.txt",
         help="Path to qrel_golds.txt",
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of parallel upload workers (default: 1)",
+    )
     args = parser.parse_args()
 
     if not args.queries_only:
@@ -330,7 +387,7 @@ def main():
         client_kwargs = {"url": QDRANT_URL.replace("6334", "6333"), "api_key": QDRANT_API_KEY, "timeout": 120}
         client_kwargs["cloud_inference"] = True
         client = QdrantClient(**client_kwargs)
-        ingest_corpus(client)
+        ingest_corpus(client, n_workers=args.workers)
 
     if not args.ingest_only:
         if not os.path.exists(args.decrypted_file):
