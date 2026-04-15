@@ -65,29 +65,44 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Ask { question } => {
             let run_log = agent.ask(&question, cli.verbose, true).await?;
-            // Print source legend: each [N] maps to a title + chunk
+            // Print source legend: highlight only sources cited in the answer
             if !run_log.sources.is_empty() {
-                eprintln!("\n{}", "Sources:".dimmed());
+                let cited: std::collections::HashSet<usize> = cited_indices(&run_log.final_answer);
+                let any_cited = run_log
+                    .sources
+                    .iter()
+                    .enumerate()
+                    .any(|(i, src)| !src.title.is_empty() && cited.contains(&(i + 1)));
+                let header = if any_cited {
+                    "Sources:"
+                } else {
+                    "Sources (none cited):"
+                };
+                eprintln!("\n{}", header.dimmed());
                 for (i, src) in run_log.sources.iter().enumerate() {
                     if src.title.is_empty() {
                         continue;
                     }
+                    let n = i + 1;
                     let chunk_str = match src.chunk_index {
                         Some(idx) => format!(" (chunk {})", idx),
                         None => String::new(),
                     };
-                    let id_str = if src.point_id.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" [id: {}]", src.point_id)
-                    };
-                    eprintln!(
-                        "  {} {}{}{}",
-                        format!("[{}]", i + 1).dimmed(),
-                        src.title.dimmed(),
-                        chunk_str.dimmed(),
-                        id_str.dimmed(),
-                    );
+                    if cited.contains(&n) {
+                        eprintln!(
+                            "  {} {}{}",
+                            format!("[{}]", n).cyan().bold(),
+                            src.title,
+                            chunk_str.dimmed(),
+                        );
+                    } else if cli.verbose {
+                        eprintln!(
+                            "  {} {}{}",
+                            format!("[{}]", n).dimmed(),
+                            src.title.dimmed(),
+                            chunk_str.dimmed(),
+                        );
+                    }
                 }
             }
             eprintln!("\n{}", run_log.summary().dimmed());
@@ -143,4 +158,29 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Parse all `[N]` citation numbers from the answer text (1-based).
+fn cited_indices(text: &str) -> std::collections::HashSet<usize> {
+    let mut set = std::collections::HashSet::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'[' {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > start && j < bytes.len() && bytes[j] == b']' {
+                if let Ok(n) = text[start..j].parse::<usize>() {
+                    set.insert(n);
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    set
 }
