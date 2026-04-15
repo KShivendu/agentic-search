@@ -85,22 +85,23 @@ async fn main() -> Result<()> {
                     }
                     let n = i + 1;
                     let chunk_str = match src.chunk_index {
-                        Some(idx) => format!(" (chunk {})", idx),
+                        Some(idx) => format!(" chunk {}", idx),
                         None => String::new(),
                     };
+                    let meta = format!(" · {}{}", src.point_id, chunk_str);
                     if cited.contains(&n) {
                         eprintln!(
                             "  {} {}{}",
                             format!("[{}]", n).cyan().bold(),
                             src.title,
-                            chunk_str.dimmed(),
+                            meta.dimmed(),
                         );
                     } else if cli.verbose {
                         eprintln!(
                             "  {} {}{}",
                             format!("[{}]", n).dimmed(),
                             src.title.dimmed(),
-                            chunk_str.dimmed(),
+                            meta.dimmed(),
                         );
                     }
                 }
