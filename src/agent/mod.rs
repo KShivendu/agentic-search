@@ -8,6 +8,8 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::io::Write;
 use std::time::Instant;
 
+use futures_util::future::join_all;
+
 use crate::config::Config;
 use crate::instrumentation::{HopLog, RunLog, RunLogger, SourceRef};
 use crate::llm::{LlmClient, StreamEvent};
@@ -119,12 +121,22 @@ impl Agent {
             };
 
             let search_start = Instant::now();
-            let query_text = pending_queries.join(" ");
-            let passages = self
-                .retriever
-                .search(&query_text, self.config.top_k)
-                .await?;
+            let search_futures = pending_queries
+                .iter()
+                .map(|q| self.retriever.search(q, self.config.top_k));
+            let search_results = join_all(search_futures).await;
             let search_latency = search_start.elapsed().as_millis() as u64;
+
+            // Merge results from all queries, deduplicating by point_id
+            let mut seen_ids = std::collections::HashSet::new();
+            let mut passages = Vec::new();
+            for result in search_results {
+                for passage in result? {
+                    if seen_ids.insert(passage.point_id.clone()) {
+                        passages.push(passage);
+                    }
+                }
+            }
             let num_results = passages.len();
 
             if let Some(sp) = &spinner {
