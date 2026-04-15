@@ -158,7 +158,7 @@ impl Agent {
 
             // Reader decides: continue or synthesize
             let llm_start = Instant::now();
-            let (decision, reader_response) = self
+            let (decision, reasoning, reader_response) = self
                 .reader
                 .read(question, &passage_texts, &accumulated_context)
                 .await?;
@@ -213,6 +213,9 @@ impl Agent {
                             follow_up_queries.len(),
                             latency_info,
                         );
+                        if let Some(r) = &reasoning {
+                            eprintln!("  {}", r.dimmed());
+                        }
                         for (i, q) in follow_up_queries.iter().enumerate() {
                             eprintln!("  {}  {}", format!("{}.", i + 1).dimmed(), q);
                         }
@@ -225,6 +228,9 @@ impl Agent {
                             num_results,
                             latency_info,
                         );
+                        if let Some(r) = &reasoning {
+                            eprintln!("  {}", r.dimmed());
+                        }
                         eprintln!();
                     }
                 }

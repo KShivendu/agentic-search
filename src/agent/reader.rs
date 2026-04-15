@@ -4,18 +4,16 @@ use crate::llm::{LlmClient, LlmResponse};
 
 const SYSTEM_PROMPT: &str = r#"You are a research reader. You are given a question, retrieved passages, and context accumulated from previous research hops.
 
-Your job is to decide:
-1. If you have enough information to answer the question, respond with:
-   {"decision": "synthesize"}
+Your job is to decide whether you have enough information to answer the question.
 
-2. If you need more information, respond with:
-   {"decision": "continue", "follow_up_queries": ["query 1", "query 2"]}
-   Provide 1-3 follow-up queries targeting specific gaps in your knowledge.
+Always respond with a JSON object with these fields:
+- "reasoning": 1-2 sentences — what relevant facts you found and what specific gap remains (or why you have enough)
+- "decision": "synthesize" or "continue"
+- "follow_up_queries": (only when decision is "continue") 1-3 queries targeting the specific gap named in reasoning
 
-Consider:
-- What aspects of the question remain unanswered?
-- What new leads do the passages suggest?
-- Are there connections between passages that need more investigation?
+Examples:
+{"reasoning": "Found that transistors replaced vacuum tubes in spacecraft by 1960, but nothing on NASA procurement contracts or cost figures.", "decision": "continue", "follow_up_queries": ["NASA transistor procurement budget 1960s", "cost comparison vacuum tubes vs transistors spacecraft"]}
+{"reasoning": "Passages cover both the timeline and the key programs (Apollo, Ranger) with sufficient technical detail to answer the question.", "decision": "synthesize"}
 
 Respond with ONLY the JSON object. No other text."#;
 
@@ -27,6 +25,7 @@ pub enum ReaderDecision {
 
 #[derive(serde::Deserialize)]
 struct ReaderOutput {
+    reasoning: Option<String>,
     decision: String,
     follow_up_queries: Option<Vec<String>>,
 }
@@ -46,7 +45,7 @@ impl Reader {
         question: &str,
         new_passages: &[String],
         accumulated_context: &[String],
-    ) -> Result<(ReaderDecision, LlmResponse)> {
+    ) -> Result<(ReaderDecision, Option<String>, LlmResponse)> {
         let passages_text = new_passages
             .iter()
             .enumerate()
@@ -88,14 +87,13 @@ impl Reader {
             .complete(&self.model, Some(SYSTEM_PROMPT), &user_message)
             .await?;
 
-        let decision = parse_decision(&response.text);
+        let (decision, reasoning) = parse_decision(&response.text);
 
-        Ok((decision, response))
+        Ok((decision, reasoning, response))
     }
 }
 
-fn parse_decision(text: &str) -> ReaderDecision {
-    // Try to parse the JSON response
+fn parse_decision(text: &str) -> (ReaderDecision, Option<String>) {
     let json_str = if let Some(start) = text.find('{') {
         if let Some(end) = text.rfind('}') {
             &text[start..=end]
@@ -107,19 +105,23 @@ fn parse_decision(text: &str) -> ReaderDecision {
     };
 
     if let Ok(output) = serde_json::from_str::<ReaderOutput>(json_str) {
+        let reasoning = output.reasoning;
         if output.decision == "continue" {
             if let Some(queries) = output.follow_up_queries {
                 if !queries.is_empty() {
-                    return ReaderDecision::Continue {
-                        follow_up_queries: queries,
-                    };
+                    return (
+                        ReaderDecision::Continue {
+                            follow_up_queries: queries,
+                        },
+                        reasoning,
+                    );
                 }
             }
         }
+        return (ReaderDecision::Synthesize, reasoning);
     }
 
-    // Default to synthesize if parsing fails or decision is "synthesize"
-    ReaderDecision::Synthesize
+    (ReaderDecision::Synthesize, None)
 }
 
 fn truncate(s: &str, max_chars: usize) -> &str {
