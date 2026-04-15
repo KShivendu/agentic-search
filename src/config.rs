@@ -37,7 +37,7 @@ impl Config {
             embedding_model: std::env::var("EMBEDDING_MODEL")
                 .unwrap_or_else(|_| "mixedbread-ai/mxbai-embed-large-v1".into()),
             max_hops: std::env::var("MAX_HOPS")
-                .unwrap_or_else(|_| "7".into())
+                .unwrap_or_else(|_| "3".into())
                 .parse()
                 .context("MAX_HOPS must be a number")?,
             top_k: std::env::var("TOP_K")
