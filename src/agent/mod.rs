@@ -81,16 +81,22 @@ impl Agent {
             sp.finish_and_clear();
         }
 
-        if verbose {
-            eprintln!(
-                "{} Generated {} queries in {}",
-                "[planner]".cyan().bold(),
-                queries.len(),
-                format!("{}ms", plan_latency).yellow(),
-            );
-            for q in &queries {
-                eprintln!("  - {}", q);
+        if stream {
+            let header = if verbose {
+                format!(
+                    "{} {} queries {}",
+                    "Planning".cyan().bold(),
+                    queries.len(),
+                    format!("({}ms)", plan_latency).dimmed(),
+                )
+            } else {
+                format!("{} {} queries", "Planning".cyan().bold(), queries.len())
+            };
+            eprintln!("{}", header);
+            for (i, q) in queries.iter().enumerate() {
+                eprintln!("  {}  {}", format!("{}.", i + 1).dimmed(), q);
             }
+            eprintln!();
         }
 
         let mut pending_queries = queries;
@@ -147,6 +153,13 @@ impl Agent {
                 sp.finish_and_clear();
             }
 
+            let decision_str = match &decision {
+                ReaderDecision::Continue { follow_up_queries } => {
+                    format!("continue({})", follow_up_queries.len())
+                }
+                ReaderDecision::Synthesize => "synthesize".into(),
+            };
+
             let hop_log = HopLog {
                 hop_number: hop_number as u32,
                 queries: pending_queries.clone(),
@@ -158,24 +171,46 @@ impl Agent {
                 llm_input_tokens: reader_response.input_tokens,
                 llm_output_tokens: reader_response.output_tokens,
                 llm_cost: reader_response.cost,
-                decision: match &decision {
-                    ReaderDecision::Continue { follow_up_queries } => {
-                        format!("continue({})", follow_up_queries.len())
-                    }
-                    ReaderDecision::Synthesize => "synthesize".into(),
-                },
+                decision: decision_str.clone(),
                 total_hop_latency_ms: hop_start.elapsed().as_millis() as u64,
             };
 
-            if verbose {
-                eprintln!(
-                    "{} {} results, search={} llm={} → {}",
-                    format!("[hop {}]", hop_number).cyan().bold(),
-                    num_results,
-                    format!("{}ms", search_latency).yellow(),
-                    format!("{}ms", llm_latency).yellow(),
-                    hop_log.decision,
-                );
+            if stream {
+                let latency_info = if verbose {
+                    format!(
+                        " {}",
+                        format!("(search {}ms, read {}ms)", search_latency, llm_latency).dimmed()
+                    )
+                } else {
+                    format!(
+                        " {}",
+                        format!("({}ms)", hop_start.elapsed().as_millis()).dimmed()
+                    )
+                };
+                match &decision {
+                    ReaderDecision::Continue { follow_up_queries } => {
+                        eprintln!(
+                            "{} {} passages → {} follow-up queries{}",
+                            format!("Hop {}", hop_number + 1).cyan().bold(),
+                            num_results,
+                            follow_up_queries.len(),
+                            latency_info,
+                        );
+                        for (i, q) in follow_up_queries.iter().enumerate() {
+                            eprintln!("  {}  {}", format!("{}.", i + 1).dimmed(), q);
+                        }
+                        eprintln!();
+                    }
+                    ReaderDecision::Synthesize => {
+                        eprintln!(
+                            "{} {} passages → ready to answer{}",
+                            format!("Hop {}", hop_number + 1).cyan().bold(),
+                            num_results,
+                            latency_info,
+                        );
+                        eprintln!();
+                    }
+                }
             }
 
             hops.push(hop_log);
